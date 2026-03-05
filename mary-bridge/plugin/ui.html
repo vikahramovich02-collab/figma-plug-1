@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #0a0a0f; color: #e8e8f0; padding: 16px; }
+
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    margin-bottom: 16px; padding-bottom: 12px;
+    border-bottom: 1px solid #1e1e2e;
+  }
+  .logo { font-weight: 800; font-size: 16px; color: #c8f064; letter-spacing: -0.5px; }
+  .status-pill {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    padding: 4px 10px; border-radius: 20px;
+    background: #14141f; border: 1px solid #1e1e2e;
+  }
+  .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .dot.connected { background: #c8f064; animation: blink 2s infinite; }
+  .dot.connecting { background: #f0c064; animation: blink 0.8s infinite; }
+  .dot.disconnected { background: #f06488; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+
+  .server-input {
+    width: 100%; background: #14141f; border: 1px solid #1e1e2e;
+    color: #e8e8f0; font-family: monospace; font-size: 11px;
+    padding: 10px 12px; outline: none; margin-bottom: 8px;
+    transition: border-color .2s;
+  }
+  .server-input:focus { border-color: #c8f064; }
+
+  .btn-row { display: flex; gap: 8px; margin-bottom: 16px; }
+  .btn {
+    flex: 1; padding: 10px; border: none; cursor: pointer;
+    font-weight: 700; font-size: 11px; letter-spacing: 1px;
+    text-transform: uppercase; transition: all .2s;
+  }
+  .btn-primary { background: #c8f064; color: #0a0a0f; }
+  .btn-primary:hover { background: #d4f57a; }
+  .btn-secondary { background: #14141f; color: #6b6b80; border: 1px solid #1e1e2e; }
+  .btn-secondary:hover { border-color: #6b6b80; color: #e8e8f0; }
+
+  .log {
+    background: #14141f; border: 1px solid #1e1e2e;
+    padding: 12px; height: 220px; overflow-y: auto;
+    font-family: monospace; font-size: 10px; line-height: 1.8;
+  }
+  .log-entry { margin-bottom: 2px; }
+  .log-entry.ok { color: #c8f064; }
+  .log-entry.err { color: #f06488; }
+  .log-entry.info { color: #6b6b80; }
+  .log-entry.exec { color: #64b4f0; }
+
+  .tip {
+    margin-top: 12px; font-size: 10px; color: #6b6b80;
+    line-height: 1.6; padding: 10px; background: #14141f;
+    border-left: 2px solid #c8f064;
+  }
+  .tip strong { color: #c8f064; }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">MARY Bridge</div>
+  <div class="status-pill" id="status-pill">
+    <div class="dot disconnected" id="status-dot"></div>
+    <span id="status-text">Offline</span>
+  </div>
+</div>
+
+<input class="server-input" id="server-url" placeholder="wss://your-app.railway.app" />
+
+<div class="btn-row">
+  <button class="btn btn-primary" id="btn-connect" onclick="connect()">Connect</button>
+  <button class="btn btn-secondary" onclick="clearLog()">Clear</button>
+</div>
+
+<div class="log" id="log"></div>
+
+<div class="tip">
+  <strong>Как работает:</strong><br>
+  1. Задеплой сервер на Railway<br>
+  2. Вставь URL сюда → Connect<br>
+  3. Пиши Клоду — он сам отправит код в Фигму
+</div>
+
+<script>
+let ws = null;
+let reconnectTimer = null;
+let serverUrl = '';
+
+function log(msg, type = 'info') {
+  const el = document.getElementById('log');
+  const entry = document.createElement('div');
+  entry.className = `log-entry ${type}`;
+  const time = new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  entry.textContent = `[${time}] ${msg}`;
+  el.appendChild(entry);
+  el.scrollTop = el.scrollHeight;
+}
+
+function clearLog() {
+  document.getElementById('log').innerHTML = '';
+}
+
+function setStatus(state) {
+  const dot = document.getElementById('status-dot');
+  const text = document.getElementById('status-text');
+  const btn = document.getElementById('btn-connect');
+  dot.className = 'dot ' + state;
+  if (state === 'connected') { text.textContent = 'Live'; btn.textContent = 'Disconnect'; }
+  if (state === 'connecting') { text.textContent = 'Connecting...'; btn.textContent = 'Cancel'; }
+  if (state === 'disconnected') { text.textContent = 'Offline'; btn.textContent = 'Connect'; }
+}
+
+function connect() {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.close();
+    return;
+  }
+
+  serverUrl = document.getElementById('server-url').value.trim();
+  if (!serverUrl) { log('Введи URL сервера', 'err'); return; }
+
+  // Save URL
+  parent.postMessage({ pluginMessage: { type: 'save-url', url: serverUrl } }, '*');
+
+  setStatus('connecting');
+  log(`Connecting to ${serverUrl}...`);
+
+  ws = new WebSocket(serverUrl);
+
+  ws.onopen = () => {
+    setStatus('connected');
+    log('Connected to bridge server', 'ok');
+  };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+
+      if (msg.type === 'connected') {
+        log(`Session: ${msg.sessionId.slice(0, 8)}...`, 'ok');
+      }
+
+      if (msg.type === 'pong') {
+        log('pong', 'info');
+      }
+
+      if (msg.type === 'exec') {
+        log(`▶ Executing job ${msg.jobId.slice(0,8)}...`, 'exec');
+        parent.postMessage({ pluginMessage: { type: 'exec', jobId: msg.jobId, code: msg.code } }, '*');
+      }
+    } catch(err) {
+      log('Bad message: ' + err.message, 'err');
+    }
+  };
+
+  ws.onclose = () => {
+    setStatus('disconnected');
+    log('Disconnected. Reconnecting in 5s...', 'err');
+    reconnectTimer = setTimeout(() => {
+      if (serverUrl) connect();
+    }, 5000);
+  };
+
+  ws.onerror = () => {
+    log('Connection error', 'err');
+  };
+}
+
+// Receive results from plugin main thread
+window.onmessage = (e) => {
+  const msg = e.data.pluginMessage;
+  if (!msg) return;
+
+  if (msg.type === 'exec-result') {
+    log(`✓ Job ${msg.jobId.slice(0,8)} done: ${msg.text}`, 'ok');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'result', jobId: msg.jobId, success: true, text: msg.text }));
+    }
+  }
+
+  if (msg.type === 'exec-error') {
+    log(`✗ Job ${msg.jobId.slice(0,8)} failed: ${msg.error}`, 'err');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: 'result', jobId: msg.jobId, success: false, error: msg.error }));
+    }
+  }
+
+  if (msg.type === 'loaded-url') {
+    if (msg.url) {
+      document.getElementById('server-url').value = msg.url;
+      log('Restored server URL', 'info');
+      // Auto-connect
+      setTimeout(connect, 500);
+    }
+  }
+};
+</script>
+</body>
+</html>
